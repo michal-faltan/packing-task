@@ -4,13 +4,15 @@ namespace App\Entity;
 
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\Mapping as ORM;
+use App\Repository\PackagingRepository;
 
 /**
  * Represents a box available in the warehouse.
  *
  * Warehouse workers pack a set of products for a given order into one of these boxes.
  */
-#[ORM\Entity]
+#[ORM\Entity(repositoryClass: PackagingRepository::class)]
+#[ORM\Table(name: 'packaging')]
 class Packaging
 {
 
