@@ -18,7 +18,21 @@ services:
         user: ${UID:-1000}:${GID:-1000}
         volumes:
           - .:/app
+        environment:
+            BIN_PACKING_USERNAME: ${BIN_PACKING_USERNAME}
+            BIN_PACKING_APIKEY: ${BIN_PACKING_APIKEY}
+            BIN_PACKING_URL: https://global-api.3dbinpacking.com/packer/packIntoMany
 
+    shipmonk-packing-nginx:
+        image: nginx:stable-alpine
+        ports:
+            - "8081:80"
+        volumes:
+            - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+            - .:/app
+        depends_on:
+            - shipmonk-packing-app
+    
     shipmonk-packing-adminer:
         depends_on:
             - shipmonk-packing-mysql
