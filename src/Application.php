@@ -52,12 +52,12 @@ class Application
             {
                 $payload = $this->productsRequestService->create3DBinPackingPayload($items, $packagings);
 
-                //TODO retry for several times if failed
+                //TODO retry for defined number of times if failed to get answer
+                //TODO fallback method if retries do not help
                 $packingResponse = $this->productsRequestService->askForSmallestPackaging($payload);
 
                 $boxSizes = $this->productsRequestService->getPackagingSizes($packingResponse->getBody());
 
-                //TODO test
                 $this->productsRequestService->saveResultToCache($hash, $boxSizes);
             }
             
