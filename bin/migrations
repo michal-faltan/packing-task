@@ -1,0 +1,25 @@
+#!/usr/bin/env php
+<?php
+
+use Doctrine\Migrations\DependencyFactory;
+use Doctrine\Migrations\Tools\Console\ConsoleRunner;
+use Doctrine\Migrations\Configuration\Migration\PhpFile;
+use Doctrine\Migrations\Configuration\EntityManager\ExistingEntityManager;
+use Symfony\Component\Console\Application;
+
+require_once __DIR__ . '/../vendor/autoload.php';
+
+$entityManager = require __DIR__ . '/../src/bootstrap.php';
+$migrationConfig = new PhpFile(__DIR__ . '/../migrations.php');
+
+$dependencyFactory = DependencyFactory::fromEntityManager(
+    $migrationConfig, 
+    new ExistingEntityManager($entityManager)
+);
+
+$cli = new Application('Doctrine Migrations');
+$cli->setCatchExceptions(true);
+
+ConsoleRunner::addCommands($cli, $dependencyFactory);
+
+$cli->run();
