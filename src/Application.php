@@ -3,117 +3,85 @@
 namespace App;
 
 use Doctrine\ORM\EntityManager;
-use GuzzleHttp\Psr7\Response;
 use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
 use GuzzleHttp\Psr7\Request;
-use GuzzleHttp\Psr7\Uri;
+use GuzzleHttp\Psr7\Response;
 use App\Entity\Packaging;
-use GuzzleHttp\Client;
+use App\Entity\ItemsPackagingCache;
+use App\Service\ProductsRequestService;
+use App\Model\ApplicationResponseContent;
+use App\Exception\InvalidRequestException;
+use App\Exception\InvalidApiResponseException;
+use App\Exception\PackagingImpossibleException;
 
 class Application
 {
-
     private EntityManager $entityManager;
 
-    public function __construct(EntityManager $entityManager)
+    private ProductsRequestService $productsRequestService;
+
+    public function __construct
+    (
+        EntityManager $entityManager, 
+        ProductsRequestService $productsRequestService
+    )
     {
         $this->entityManager = $entityManager;
+        $this->productsRequestService = $productsRequestService;
     }
-
-    private function parsePackingApiResponse(string $json): array 
-    {
-        $decoded = json_decode($json, true);
-    
-        if (!isset($decoded['response'])) {
-            throw new \RuntimeException('Missing `response` key.');
-        }
-    
-        $response = $decoded['response'];
-    
-        if (!empty($response['errors'])) {
-            throw new \RuntimeException('API errors: ' . json_encode($response['errors']));
-        }
-    
-        if (!isset($response['bins_packed']) || count($response['bins_packed']) !== 1) {
-            throw new \RuntimeException('Expected exactly 1 packed bin.');
-        }
-    
-        $binData = $response['bins_packed'][0]['bin_data'] ?? null;
-    
-        if (!$binData) {
-            throw new \RuntimeException('Missing `bin_data`.');
-        }
-    
-        return $binData;
-    }
-    
 
     public function run(RequestInterface $request): ResponseInterface
     {
-        // your implementation entrypoint
-        $username = getenv('BIN_PACKING_USERNAME');
-        $api_key = getenv('BIN_PACKING_APIKEY');
-        $url = getenv('BIN_PACKING_URL');
+        try {
+            $products = $this->productsRequestService->retrieveProducts($request);
+            
+            $items = $this->productsRequestService->transformProductsToItems($products);
+            
+            $packagingsRepository = $this->entityManager->getRepository(Packaging::class);
+            $packagings = $packagingsRepository->getPackagingsApiData();
 
-        $packagingsRepository = $this->entityManager->getRepository(Packaging::class);
-        $packagings = $packagingsRepository->getPackagingsApiData();
+            $hash = $this->productsRequestService->calculateHashForItemsAndBoxes($items, $packagings);
 
-        $body = $request->getBody()->getContents();
-        $data = json_decode($body, true);
-        $items = [];
-        foreach ($data['products'] as $product)
-        {
-            $item = [];
-            $item['id'] = $product['id'];
-            $item['w'] = $product['width'];
-            $item['h'] = $product['height'];
-            $item['d'] = $product['length'];
-            $item['wg'] = $product['weight'];
-            $item['q'] = 1;
-            $item['vr'] = true;
-            $items[] = $item;
+            $cachedResult = $this->entityManager->getRepository(ItemsPackagingCache::class)->findOneBy(['itemsAndPackagingsHash' => $hash]);
+            if ($cachedResult instanceof ItemsPackagingCache)
+            {
+                $boxSizes = $this->productsRequestService->getCachedPackagingSizes($cachedResult);
+            }
+            else
+            {
+                $payload = $this->productsRequestService->create3DBinPackingPayload($items, $packagings);
+
+                //TODO retry for several times if failed
+                $packingResponse = $this->productsRequestService->askForSmallestPackaging($payload);
+
+                $boxSizes = $this->productsRequestService->getPackagingSizes($packingResponse->getBody());
+
+                //TODO test
+                $this->productsRequestService->saveResultToCache($hash, $boxSizes);
+            }
+            
+            $responseContent = new ApplicationResponseContent();
+            $responseContent->setBoxData($boxSizes);
+        } catch(InvalidRequestException $ire) {
+            $responseContent = new ApplicationResponseContent(405);
+            $responseContent->addErrorMessage($ire->getMessage());
+        } catch(InvalidArgumentException $e) {
+            $responseContent = new ApplicationResponseContent(400);
+            $responseContent->addErrorMessage($e->getMessage());
+        } catch(PackagingImpossibleException | InvalidApiResponseException $e) {
+            $responseContent = new ApplicationResponseContent();
+            $responseContent->addErrorMessage($e->getMessage());
+            $responseContent->setFailed();
+        } catch(Exception $e) {
+            $responseContent = new ApplicationResponseContent(500);
+            $responseContent->addErrorMessage('Internal Server Error');
         }
 
-        $data = [
-            'username' => $username,
-            'api_key' => $api_key,
-            'items' => $items,
-            'bins' => $packagings,
-            'params' => [
-                'optimization_mode' => 'bins_number'
-            ]
-        ];
-
-        $content = json_encode($data, JSON_PRETTY_PRINT);
-
-        $client = new Client([
-            'base_uri' => $url,
-            'timeout'  => 2.0,
-        ]);
-
-        $packing_request = new Request(
-            'POST', 
-            new Uri($url), 
-            ['Content-Type' => 'application/json'], 
-            $content
-        );
-
-        $packing_response = $client->send($packing_request);
-
-        $packing_response_data = $this->parsePackingApiResponse($packing_response->getBody());
-        
-        $response_data = [
-            'status' => 'ok',
-            'box' => $packing_response_data,
-            'errors' => []
-        ];
-
-        $response = new Response();
-        $response->getBody()->write(json_encode($response_data));
+        $response = new Response($responseContent->getStatusCode());
+        $response->getBody()->write($responseContent->getJsonEncoded());
         $response = $response->withHeader('Content-Type', 'application/json');
 
         return $response;
     }
-
 }
